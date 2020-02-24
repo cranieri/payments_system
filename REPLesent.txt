@@ -1,0 +1,952 @@
+| \gCreating a payments system with Scala
+
+---
+| \gObjectives
+
+- We want to build a payments system using Scala as FP language
+
+- We want to keep the side effects at the edge of our application
+
+- We want to keep the core of our application pure
+
+- We want to separate the description of our application from the execution
+
+- We want to get to our final solution by starting from a "suboptimal" implementation
+
+---
+```
+case class Payer(name: String, last_name: String, email: String)
+case class Beneficiary(name: String, last_name: String, currency: String)
+case class Payment(
+    amount: Int,
+    currency: String,
+    paymentReason: String,
+    payer: Payer,
+    beneficiary: Beneficiary,
+    var bankProvider: String
+)
+
+object BarclaysSubmitter { def submit: Unit                  = println("submitted")                 }
+object NatWestSubmitter  { def submit: Unit                  = println("submitted")                 }
+object EmailSender       { def send(recipient: String): Unit = println(s"send email to $recipient") }
+
+class PaymentManager(payment: Payment) {
+  var paymentStatus = "new"
+
+  def validate: Boolean = {
+    if (payment.amount < 1) {
+      throw Exception
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      throw Exception
+    }
+
+    if (payment.currency == "GBP") {
+      payment.bankProvider = "Barclays"
+    } else {
+      payment.bankProvider = "NatWest"
+    }
+    paymentStatus = "ready_to_submit"
+    EmailSender.send(emailRecipients)
+    true
+  }
+
+  def submit: Unit = {
+    if (payment.bankProvider == "Barclays") {
+      BarclaysSubmitter.submit
+    } else if (payment.bankProvider == "NatWest") {
+      NatWestSubmitter.submit
+    }
+    paymentStatus = "submitted"
+    EmailSender.send(emailRecipients)
+  }
+
+  private def emailRecipients: String =
+    if (paymentStatus == "ready_to_submit") {
+      "product@currencycloud.com"
+    } else {
+      "ops@currencycloud.com"
+    }
+
+}
+
+class PaymentSystem(payment: Payment) {
+  def processPayment: Unit =
+    try {
+      val paymentManager = new PaymentManager(payment)
+      if (paymentManager.validate) {
+        paymentManager.submit
+      }
+    } catch {
+      case x: Exception => println(s"payment creation error: $x")
+    }
+}
+
+```
+---
+\r\*You cannot use a mocked PaymentManager, no way to inject one
+
+/
+
+```
+class PaymentSystem(payment: Payment) {
+  def processPayment: Unit =
+    try {
+      val paymentManager = new PaymentManager(payment)
+      if (paymentManager.validate) {
+        paymentManager.submit
+      }
+    } catch {
+      case x: Exception => println(s"payment creation error: $x")
+    }
+}
+```
+---
+\r\*The PaymentManager#validate doesn't only validate. It amends the payment, updates the payment status, sends an email
+
+/
+
+```
+def validate: Boolean = {
+    if (payment.amount < 1) {
+      throw Exception
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      throw Exception
+    }
+
+    if (payment.currency == "GBP") {
+      payment.bankProvider = "Barclays"
+    } else {
+      payment.bankProvider = "NatWest"
+    }
+    paymentStatus = "ready_to_submit"
+    EmailSender.send(emailRecipients)
+    true
+  }
+```
+---
+\r\* (Generic) exceptions are used to handle business logic, ahi!
+
+```
+    if (payment.amount < 1) {
+      throw Exception
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      throw Exception
+    }
+```
+---
+\r\* The PaymentManager#validate method signature is lying
+
+/
+
+```
+  def validate: Boolean = {
+    if (payment.amount < 1) {
+      throw Exception
+    }
+    ...
+    true
+  }
+```
+---
+\r\*It's not clear what a payment is. The bank provider is not really a payment detail
+
+/
+
+```
+case class Payment(
+    amount: Int,
+    currency: String,
+    paymentReason: String,
+    payer: Payer,
+    beneficiary: Beneficiary,
+    var bankProvider: String
+)
+```
+
+---
+\r\*The payment manager is doing too many things: validating, submitting, deciding the email recipient
+
+/
+
+```
+class PaymentManager(payment: Payment) {
+  var paymentStatus = "new"
+
+  def validate: Boolean = {
+    ...
+  }
+
+  def submit: Unit = {
+    ...
+  }
+
+  private def emailRecipients: String = {
+    ...
+  }
+
+}
+```
+
+---
+\r\*What if we call the submit method before calling validate? (the bank provider might be blank)
+
+/
+
+```
+def submit: Unit = {
+    if (payment.bankProvider == "Barclays") {
+      BarclaysSubmitter.submit
+    } else if (payment.bankProvider == "NatWest") {
+      NatWestSubmitter.submit
+    }
+    paymentStatus = "submitted"
+    EmailSender.send(emailRecipients)
+  }
+```
+---
+
+\r\*Lack of referential transparency (emailRecipients, bankProvider)
+
+/
+
+```
+private def emailRecipients: String = {
+    if (paymentStatus == "ready_to_submit") {
+      "product@currencycloud.com"
+    } else {
+      "ops@currencycloud.com"
+    }
+}
+```
+
+---
+\r\*Side effects happen in an uncontrolled way (i.e. sending an email while validating)
+
+/
+
+```
+  def validate: Boolean = {
+    ...
+    EmailSender.send(emailRecipients)
+    true
+  }
+
+  def submit: Unit = {
+    ...
+    EmailSender.send(emailRecipients)
+  }
+```
+
+---
+| \gRefactor all the things :)
+
+
+| \gFunctional programming to the rescue!!
+
+---
+\r\*What does referentially transparent mean?
+
+/
+
+```
+private def emailRecipients: String = {
+    if (paymentStatus == "ready_to_submit") {
+      "product@currencycloud.com"
+    } else {
+      "ops@currencycloud.com"
+    }
+}
+
+
+val payment = Payment(
+                        10,"GBP","dinner",
+                        Payer("john", "doe", "john@email.com"),
+                        Beneficiary("maria", "smith", "maria@email.com")
+                    )
+val paymentManager = new PaymentManager(payment)
+
+paymentManager.validate
+
+val recipients = emailRecipients
+
+println(recipients)
+\\ product@currencycloud.com
+
+paymentManager.submit
+
+println(emailRecipients)
+\\ ops@currencycloud.com
+```
+
+---
+\r\*No shared states anymore and emailRecipients is referentially transparent. Good start!
+
+/
+
+```
+object EmailSender       { def send(recipient: String): Unit = println(s"send email to $recipient") }
+
+class PaymentManager(payment: Payment) {
+  def validate: Boolean = {
+    ...
+    EmailSender.send(emailRecipients("ready_to_submit"))
+    true
+  }
+
+  def submit: Unit = {
+    ...
+    EmailSender.send(emailRecipients("submitted"))
+  }
+
+  private def emailRecipients(paymentStatus: String): String = {
+    if (paymentStatus == "ready_to_submit") {
+      "product@email.com"
+    } else {
+      "currencycloud@email.com"
+    }
+  }
+
+}
+```
+---
+
+\r\*Validation and submission are 2 separate steps. Keep going!
+
+/
+
+```
+object EmailSender       {
+  def send(paymentStatus: String): Unit = println(s"send email to ${emailRecipients(paymentStatus)}")
+
+  private def emailRecipients(paymentStatus: String): String =
+    if (paymentStatus == "ready_to_submit") {
+      "product@email.com"
+    } else {
+      "currencycloud@email.com"
+    }
+}
+
+
+class PaymentValidator(payment: Payment) {
+  def validate: Boolean = {
+    if (payment.amount < 1) {
+      throw Exception
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      throw Exception
+    }
+
+    if (payment.currency == "GBP") {
+      payment.bankProvider = "Barclays"
+    } else {
+      payment.bankProvider = "NatWest"
+    }
+
+    EmailSender.send("ready_to_submit")
+    true
+  }
+}
+
+class PaymentSubmitter(payment: Payment) {
+  def submit: Unit = {
+    if (payment.bankProvider == "Barclays") {
+      BarclaysSubmitter.submit
+    } else if (payment.bankProvider == "NatWest") {
+      NatWestSubmitter.submit
+    }
+
+    EmailSender.send("submitted")
+  }
+}
+```
+
+---
+\r\*We can better define what a payment is
+
+/
+
+```
+sealed trait Payment {
+  val amount: Int
+  val currency: String
+  val paymentReason: String
+  val beneficiary: Beneficiary
+}
+
+case class PaymentData(
+                        amount: Int,
+                        currency: String,
+                        paymentReason: String,
+                        beneficiary: Beneficiary
+                      ) extends Payment
+
+case class ValidPayment(
+                         amount: Int,
+                         currency: String,
+                         paymentReason: String,
+                         beneficiary: Beneficiary,
+                         bankProvider: BankProvider
+                       ) extends Payment
+```
+
+---
+\r\*By using the types wisely...we cannot submit an invalid payment anymore. Wow!
+
+/
+
+```
+object EmailSender {
+  def send(paymentStatus: String): Unit =
+    println(s"send email to ${emailRecipients(paymentStatus)}")
+
+  private def emailRecipients(paymentStatus: String): String =
+    if (paymentStatus == "ready_to_submit") {
+      "product@email.com"
+    } else {
+      "currencycloud@email.com"
+    }
+}
+
+class PaymentValidator(payment: PaymentData) {
+  def validate: ValidPayment = {
+    if (payment.amount < 1) {
+      throw Exception
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      throw Exception
+    }
+
+    EmailSender.send("ready_to_submit")
+
+    if (payment.currency == "GBP") {
+      ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        "Barclays"
+      )
+    } else {
+      ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        "NatWest"
+      )
+    }
+  }
+}
+
+class PaymentSubmitter(payment: ValidPayment) {
+  def submit: Unit = {
+    if (payment.bankProvider == "Barclays") {
+      BarclaysSubmitter.submit
+    } else if (payment.bankProvider == "NatWest") {
+      NatWestSubmitter.submit
+    }
+    EmailSender.send("submitted")
+  }
+}
+```
+
+---
+\r\*The type system is your friend. PaymentValidator#validate is not lying anymore.
+
+/
+
+```
+class PaymentValidator(payment: PaymentData) {
+  def validate: Either[ValidationError, ValidPayment] = {
+    if (payment.amount < 1) {
+      return Left(AmountInvalidError("Invalid amount"))
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      return Left(CurrencyInvalidError("Invalid currency"))
+    }
+
+    EmailSender.send("ready_to_submit")
+
+    if (payment.currency == "GBP") {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        "Barclays"
+      ))
+    } else {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        "NatWest")
+      )
+    }
+  }
+}
+
+class PaymentSubmitter(payment: ValidPayment) {
+  def submit: Unit = {
+    ...
+  }
+}
+```
+
+---
+\r\*No need to handle exceptions in the PaymentSystem#processPayment
+
+/
+
+```
+class PaymentSystem(payment: PaymentData) {
+  def processPayment: Unit = {
+    val processedPayment = for {
+      validPayment <- new PaymentValidator(payment).validate
+      submittedPayment = new PaymentSubmitter(validPayment).submit
+    } yield submittedPayment
+
+    processedPayment match {
+      case Right(p) =>   println("Payment successfully submitted")
+      case Left(_) => println("Error while processing the payment")
+    }
+  }
+}
+```
+
+---
+\r\*Sending email doesn't have to be part of validating or submitting a payment
+
+/
+
+```
+class PaymentSystem(payment: PaymentData) {
+  def processPayment: Unit = {
+    val processedPayment = for {
+      validPayment <- new PaymentValidator(payment).validate
+      _ <- EmailSender.send("ready_to_submit")
+      submittedPayment = new PaymentSubmitter(validPayment).submit
+      _ <- EmailSender.send("submitted")
+    } yield submittedPayment
+
+    processedPayment match {
+      case Right(p) =>   println(p)
+      case Left(_) => println("Error while processing the payment")
+    }
+  }
+}
+
+```
+
+---
+\r\*Let's leverage the type system a bit more
+
+/
+
+```
+class PaymentSubmitter(payment: ValidPayment) {
+  def submit: Unit = {
+    if (payment.bankProvider == "Barclays") {
+      BarclaysSubmitter.submit
+    } else if (payment.bankProvider == "NatWest") {
+      NatWestSubmitter.submit
+    }
+  }
+}
+
+object EmailSender {
+  def send(paymentStatus: String): Either[EmailSendError, Unit] =
+    Right(println(s"send email to ${emailRecipients(paymentStatus)}"))
+
+  private def emailRecipients(paymentStatus: String): String =
+    if (paymentStatus == "ready_to_submit") {
+      "product@email.com"
+    } else {
+      "currencycloud@email.com"
+    }
+}
+
+```
+
+---
+\r\*Let's leverage the type system a bit more
+
+/
+
+```
+sealed trait BankProvider
+
+case object Barclays extends BankProvider
+case object NatWest extends BankProvider
+
+sealed trait PaymentStatus {
+  val name: String
+}
+
+case class ReadyToSubmit(name: String) extends PaymentStatus
+case class Submitted(name: String) extends PaymentStatus
+
+class PaymentSubmitter(payment: ValidPayment) {
+  def submit: Unit = {
+    payment.bankProvider match {
+      case Barclays => BarclaysSubmitter.submit
+      case NatWest => NatWestSubmitter.submit
+    }
+  }
+}
+
+
+object EmailSender {
+  def send[T <: PaymentStatus](paymentStatus: T): Either[EmailSendError, Unit] =
+    Right(println(s"send email to ${emailRecipients(paymentStatus)}"))
+
+  private def emailRecipients(paymentStatus: PaymentStatus): String = {
+    paymentStatus match {
+      case _:ReadyToSubmit => "product@email.com"
+      case _:Submitted => "ops@email.com"
+    }
+  }
+}
+```
+
+---
+
+\r\*Let's improve testability via dependency injection
+
+/
+
+```
+class PaymentSystem(payment: PaymentData,
+                    paymentValidator: PaymentValidator,
+                    paymentSubmitter: PaymentSubmitter,
+                    emailSender: EmailSender.type) {
+  def processPayment: Unit = {
+    val processedPayment = for {
+      validPayment <- paymentValidator.validate(payment)
+      _ <- emailSender.send(ReadyToSubmit)
+      submittedPayment = paymentSubmitter.submit(validPayment)
+      _ <- emailSender.send(Submitted)
+    } yield submittedPayment
+
+    processedPayment match {
+      case Right(_) => println("Payment successfully submitted")
+      case Left(_) => println("Error while processing the payment")
+    }
+  }
+}
+```
+
+---
+\r\*Remember our objectives? We want a pure core and an impure shell
+
+/
+
+```
+class PaymentSystem(payment: PaymentData) {
+  def processPayment: Unit = {
+    val processedPayment = for {
+      validPayment <- new PaymentValidator(payment).validate
+      _ <- EmailSender.send("ready_to_submit")
+      submittedPayment = new PaymentSubmitter(validPayment).submit
+      _ <- EmailSender.send("submitted")
+    } yield submittedPayment
+
+    processedPayment match {
+      case Right(p) =>   println("Payment successfully submitted")
+      case Left(_) => println("Error while processing the payment")
+    }
+  }
+}
+```
+---
+
+\r\*We need an effect type!
+
+/
+
+```
+sealed trait PaymentProcessingError {
+  val message: String
+}
+case class EmailSendError(message: String) extends PaymentProcessingError
+
+case class AmountInvalidError(message: String) extends PaymentProcessingError
+case class CurrencyInvalidError(message: String) extends PaymentProcessingError
+
+
+object EmailSender {
+  def send[T <: PaymentStatus, E <: PaymentProcessingError](paymentStatus: T): EitherT[IO, E, Unit] =
+    EitherT[IO, E, Unit](IO(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
+
+  private def emailRecipients(paymentStatus: PaymentStatus): String = {
+    paymentStatus match {
+      case _:ReadyToSubmit => "product@email.com"
+      case _:Submitted => "ops@email.com"
+    }
+  }
+}
+
+class PaymentSystem(payment: PaymentData,
+                    paymentValidator: PaymentValidator,
+                    paymentSubmitter: PaymentSubmitter,
+                    emailSender: EmailSender.type) {
+  def processPayment: IO[Unit] = {
+    val processedPayment = for {
+      validPayment <- EitherT(IO.pure(paymentValidator.validate(payment)))
+      _ <- EmailSender.send(ReadyToSubmit)
+      submittedPayment = paymentSubmitter.submit(validPayment)
+      _ <- EmailSender.send(Submitted)
+    } yield submittedPayment
+
+
+    processedPayment.value.map {
+      payment =>
+        payment match {
+          case Right(_) =>  println(s"Payment successfully submitted")
+          case Left(_) => println("Error while processing the payment")
+        }
+    }
+  }
+}
+```
+
+---
+
+\r\*We've gone a long way. Bravo!
+
+/
+
+```
+import cats.data.EitherT
+import cats.effect.IO
+
+/**
+ * Remember our objectives? We want a pure core and an impure shell
+ *
+ */
+case class Payer(name: String, last_name: String, email: String)
+case class Beneficiary(name: String, last_name: String, currency: String)
+
+sealed trait BankProvider
+
+case object Barclays extends BankProvider
+case object NatWest extends BankProvider
+
+sealed trait PaymentStatus {
+  val name: String
+}
+
+case class ReadyToSubmit(name: String) extends PaymentStatus
+case class Submitted(name: String) extends PaymentStatus
+
+sealed trait Payment {
+  val amount: Int
+  val currency: String
+  val paymentReason: String
+  val beneficiary: Beneficiary
+}
+case class PaymentData(
+                        amount: Int,
+                        currency: String,
+                        paymentReason: String,
+                        beneficiary: Beneficiary
+                      ) extends Payment
+case class ValidPayment(
+                         amount: Int,
+                         currency: String,
+                         paymentReason: String,
+                         beneficiary: Beneficiary,
+                         bankProvider: BankProvider
+                       ) extends Payment
+
+object BarclaysSubmitter { def submit: Unit = println("submitted") }
+object NatWestSubmitter  { def submit: Unit = println("submitted") }
+
+
+
+
+sealed trait PaymentProcessingError {
+  val message: String
+}
+case class EmailSendError(message: String) extends PaymentProcessingError
+
+case class AmountInvalidError(message: String) extends PaymentProcessingError
+case class CurrencyInvalidError(message: String) extends PaymentProcessingError
+
+
+object EmailSender {
+  def send[T <: PaymentStatus, E <: PaymentProcessingError](paymentStatus: T): EitherT[IO, E, Unit] =
+    EitherT[IO, E, Unit](IO(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
+
+  private def emailRecipients(paymentStatus: PaymentStatus): String = {
+    paymentStatus match {
+      case _:ReadyToSubmit => "product@email.com"
+      case _:Submitted => "ops@email.com"
+    }
+  }
+}
+
+
+class PaymentValidator(payment: PaymentData) {
+  def validate: Either[PaymentProcessingError, ValidPayment] = {
+    if (payment.amount < 1) {
+      return Left(AmountInvalidError("invalid amount"))
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      return Left(CurrencyInvalidError("invalid amount"))
+    }
+
+    if (payment.currency == "GBP") {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        Barclays
+      ))
+    } else {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        NatWest)
+      )
+    }
+  }
+}
+
+class PaymentSubmitter(payment: ValidPayment) {
+  def submit: Unit = {
+    payment.bankProvider match {
+      case Barclays => BarclaysSubmitter.submit
+      case NatWest => NatWestSubmitter.submit
+    }
+  }
+}
+
+class PaymentSystem(payment: PaymentData) {
+  def processPayment: IO[Unit] = {
+    val processedPayment = for {
+      validPayment <- EitherT(IO.pure(new PaymentValidator(payment).validate))
+      _ <- EmailSender.send(ReadyToSubmit)
+      submittedPayment = new PaymentSubmitter(validPayment).submit
+      _ <- EmailSender.send(Submitted)
+    } yield submittedPayment
+
+
+    processedPayment.value.map {
+      payment =>
+        payment match {
+          case Right(_) =>   println(s"Payment successfully submitted")
+          case Left(_) => println("Error while processing the payment")
+        }
+    }
+  }
+}
+
+```
+
+---
+\r\*Do not commit to the effect type, Tagless Final?
+
+/
+
+```
+trait EmailSenderAlg[F[_]] {
+  def send[T <: PaymentStatus](paymentStatus: T): EitherT[F, PaymentProcessingError, Unit]
+}
+
+trait PaymentSubmitterAlg {
+  def submit(payment: ValidPayment): Unit
+}
+
+trait PaymentValidatorAlg {
+  def validate(payment: PaymentData): Either[PaymentProcessingError, ValidPayment]
+}
+
+class EmailSender[F[_]: Sync] extends EmailSenderAlg[F]{
+  def send[T <: PaymentStatus](paymentStatus: T): EitherT[F, PaymentProcessingError, Unit] =
+    EitherT[F, PaymentProcessingError, Unit](Sync[F].pure(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
+
+  private def emailRecipients(paymentStatus: PaymentStatus): String = {
+    paymentStatus match {
+      case _: ReadyToSubmit.type => "product@email.com"
+      case _: Submitted.type => "ops@email.com"
+    }
+  }
+}
+
+class PaymentSubmitter extends PaymentSubmitterAlg {
+  def submit(payment: ValidPayment): Unit = {
+    payment.bankProvider match {
+      case Barclays => BarclaysSubmitter.submit
+      case NatWest => NatWestSubmitter.submit
+    }
+  }
+}
+
+class PaymentValidator extends PaymentValidatorAlg {
+  def validate(payment: PaymentData): Either[PaymentProcessingError, ValidPayment] = {
+    if (payment.amount < 1) {
+      return Left(AmountInvalidError("invalid amount"))
+    }
+
+    if (payment.currency != payment.beneficiary.currency) {
+      return Left(CurrencyInvalidError("invalid amount"))
+    }
+
+    if (payment.currency == "GBP") {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        Barclays
+      ))
+    } else {
+      Right(ValidPayment(
+        payment.amount,
+        payment.currency,
+        payment.paymentReason,
+        payment.beneficiary,
+        NatWest)
+      )
+    }
+  }
+}
+
+class PaymentProgram[F[_]: Sync](payment: PaymentData,
+                                 paymentValidator: PaymentValidator,
+                                 paymentSubmitter: PaymentSubmitter,
+                                 emailSender: EmailSenderAlg[F]) {
+  def processPayment: F[Unit] = {
+    val processedPayment = for {
+      validPayment <- EitherT[F, PaymentProcessingError, ValidPayment](Sync[F].pure(paymentValidator.validate(payment)))
+      _ <- emailSender.send[ReadyToSubmit.type](ReadyToSubmit)
+      submittedPayment = paymentSubmitter.submit(validPayment)
+      _ <- emailSender.send(Submitted)
+    } yield submittedPayment
+
+
+    processedPayment.value.map {
+      payment =>
+        payment match {
+          case Right(_) => println(s"Payment successfully submitted")
+          case Left(_) => println("Error while processing the payment")
+        }
+    }
+  }
+}
+```
