@@ -11,7 +11,6 @@ case object NatWest extends BankProvider
 sealed trait Payment {
   val amount: Int
   val currency: String
-  val paymentReason: String
   val beneficiary: Beneficiary
 }
 

@@ -9,19 +9,28 @@
 
 - We want to keep the core of our application pure
 
-- We want to separate the description of our application from the execution
+- We want to separate the description of our application from the implementation
 
 - We want to get to our final solution by starting from a "suboptimal" implementation
 
 ---
+| \gWhat is a payment system?
+
+- A payment has an amount, currency, beneficiary
+
+- A payment must be validated before being submitted
+
+- An email has to be sent after a payment is successfully validated
+
+- An email has to be sent after a payment is successfully submitted
+
+- A payment can be submitted through several bank providers based on the currency
+---
 ```
-case class Payer(name: String, last_name: String, email: String)
 case class Beneficiary(name: String, last_name: String, currency: String)
 case class Payment(
     amount: Int,
     currency: String,
-    paymentReason: String,
-    payer: Payer,
     beneficiary: Beneficiary,
     var bankProvider: String
 )
@@ -162,8 +171,6 @@ def validate: Boolean = {
 case class Payment(
     amount: Int,
     currency: String,
-    paymentReason: String,
-    payer: Payer,
     beneficiary: Beneficiary,
     var bankProvider: String
 )
@@ -266,7 +273,6 @@ private def emailRecipients: String = {
 
 val payment = Payment(
                         10,"GBP","dinner",
-                        Payer("john", "doe", "john@email.com"),
                         Beneficiary("maria", "smith", "maria@email.com")
                     )
 val paymentManager = new PaymentManager(payment)
@@ -276,12 +282,12 @@ paymentManager.validate
 val recipients = emailRecipients
 
 println(recipients)
-\\ product@currencycloud.com
+\\\\ product@currencycloud.com
 
 paymentManager.submit
 
 println(emailRecipients)
-\\ ops@currencycloud.com
+\\\\ ops@currencycloud.com
 ```
 
 ---
@@ -376,21 +382,18 @@ class PaymentSubmitter(payment: Payment) {
 sealed trait Payment {
   val amount: Int
   val currency: String
-  val paymentReason: String
   val beneficiary: Beneficiary
 }
 
 case class PaymentData(
                         amount: Int,
                         currency: String,
-                        paymentReason: String,
                         beneficiary: Beneficiary
                       ) extends Payment
 
 case class ValidPayment(
                          amount: Int,
                          currency: String,
-                         paymentReason: String,
                          beneficiary: Beneficiary,
                          bankProvider: BankProvider
                        ) extends Payment
@@ -426,23 +429,17 @@ class PaymentValidator(payment: PaymentData) {
 
     EmailSender.send("ready_to_submit")
 
-    if (payment.currency == "GBP") {
-      ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        "Barclays"
-      )
-    } else {
-      ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        "NatWest"
-      )
-    }
+    ValidPayment(
+          payment.amount,
+          payment.currency,
+          payment.paymentReason,
+          payment.beneficiary,
+          getProvider(payment.currency)
+        )
+  }
+
+  private def getProvider(currency: String): BankProvider = {
+    if (currency == "GBP") Barclays else NatWest
   }
 }
 
@@ -480,7 +477,6 @@ class PaymentValidator(payment: PaymentData) {
       Right(ValidPayment(
         payment.amount,
         payment.currency,
-        payment.paymentReason,
         payment.beneficiary,
         "Barclays"
       ))
@@ -488,7 +484,6 @@ class PaymentValidator(payment: PaymentData) {
       Right(ValidPayment(
         payment.amount,
         payment.currency,
-        payment.paymentReason,
         payment.beneficiary,
         "NatWest")
       )
@@ -517,7 +512,7 @@ class PaymentSystem(payment: PaymentData) {
     } yield submittedPayment
 
     processedPayment match {
-      case Right(p) =>   println("Payment successfully submitted")
+      case Right(_) =>   println("Payment successfully submitted")
       case Left(_) => println("Error while processing the payment")
     }
   }
@@ -540,7 +535,7 @@ class PaymentSystem(payment: PaymentData) {
     } yield submittedPayment
 
     processedPayment match {
-      case Right(p) =>   println(p)
+      case Right(_) =>   println("Payment successfully submitted")
       case Left(_) => println("Error while processing the payment")
     }
   }
@@ -607,7 +602,7 @@ class PaymentSubmitter(payment: ValidPayment) {
 
 
 object EmailSender {
-  def send[T <: PaymentStatus](paymentStatus: T): Either[EmailSendError, Unit] =
+  def send(paymentStatus: PaymentStatus): Either[EmailSendError, Unit] =
     Right(println(s"send email to ${emailRecipients(paymentStatus)}"))
 
   private def emailRecipients(paymentStatus: PaymentStatus): String = {
@@ -685,7 +680,7 @@ case class CurrencyInvalidError(message: String) extends PaymentProcessingError
 
 
 object EmailSender {
-  def send[T <: PaymentStatus, E <: PaymentProcessingError](paymentStatus: T): EitherT[IO, E, Unit] =
+  def send(paymentStatus: PaymentStatus): EitherT[IO, PaymentProcessingError, Unit] =
     EitherT[IO, E, Unit](IO(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
 
   private def emailRecipients(paymentStatus: PaymentStatus): String = {
@@ -734,7 +729,6 @@ import cats.effect.IO
  * Remember our objectives? We want a pure core and an impure shell
  *
  */
-case class Payer(name: String, last_name: String, email: String)
 case class Beneficiary(name: String, last_name: String, currency: String)
 
 sealed trait BankProvider
@@ -752,19 +746,16 @@ case class Submitted(name: String) extends PaymentStatus
 sealed trait Payment {
   val amount: Int
   val currency: String
-  val paymentReason: String
   val beneficiary: Beneficiary
 }
 case class PaymentData(
                         amount: Int,
                         currency: String,
-                        paymentReason: String,
                         beneficiary: Beneficiary
                       ) extends Payment
 case class ValidPayment(
                          amount: Int,
                          currency: String,
-                         paymentReason: String,
                          beneficiary: Beneficiary,
                          bankProvider: BankProvider
                        ) extends Payment
@@ -785,7 +776,7 @@ case class CurrencyInvalidError(message: String) extends PaymentProcessingError
 
 
 object EmailSender {
-  def send[T <: PaymentStatus, E <: PaymentProcessingError](paymentStatus: T): EitherT[IO, E, Unit] =
+  def send(paymentStatus: PaymentStatus): EitherT[IO, PaymentProcessingError, Unit] =
     EitherT[IO, E, Unit](IO(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
 
   private def emailRecipients(paymentStatus: PaymentStatus): String = {
@@ -807,24 +798,18 @@ class PaymentValidator(payment: PaymentData) {
       return Left(CurrencyInvalidError("invalid amount"))
     }
 
-    if (payment.currency == "GBP") {
-      Right(ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        Barclays
-      ))
-    } else {
-      Right(ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        NatWest)
-      )
+    Right(ValidPayment(
+              payment.amount,
+              payment.currency,
+              payment.paymentReason,
+              payment.beneficiary,
+              getProvider(payment.currency)
+            ))
     }
-  }
+
+    private def getProvider(currency: String): BankProvider = {
+      if (currency == "GBP") Barclays else NatWest
+    }
 }
 
 class PaymentSubmitter(payment: ValidPayment) {
@@ -877,8 +862,8 @@ trait PaymentValidatorAlg {
 }
 
 class EmailSender[F[_]: Sync] extends EmailSenderAlg[F]{
-  def send[T <: PaymentStatus](paymentStatus: T): EitherT[F, PaymentProcessingError, Unit] =
-    EitherT[F, PaymentProcessingError, Unit](Sync[F].pure(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
+  def send(paymentStatus: PaymentStatus): EitherT[F, PaymentProcessingError, Unit] =
+    EitherT[F, PaymentProcessingError, Unit](Sync[F].delay(Right(println(s"send email to ${emailRecipients(paymentStatus)}"))))
 
   private def emailRecipients(paymentStatus: PaymentStatus): String = {
     paymentStatus match {
@@ -907,23 +892,17 @@ class PaymentValidator extends PaymentValidatorAlg {
       return Left(CurrencyInvalidError("invalid amount"))
     }
 
-    if (payment.currency == "GBP") {
-      Right(ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        Barclays
-      ))
-    } else {
-      Right(ValidPayment(
-        payment.amount,
-        payment.currency,
-        payment.paymentReason,
-        payment.beneficiary,
-        NatWest)
-      )
-    }
+    Right(ValidPayment(
+          payment.amount,
+          payment.currency,
+          payment.paymentReason,
+          payment.beneficiary,
+          getProvider(payment.currency)
+        ))
+  }
+
+  private def getProvider(currency: String): BankProvider = {
+    if (currency == "GBP") Barclays else NatWest
   }
 }
 
@@ -950,3 +929,18 @@ class PaymentProgram[F[_]: Sync](payment: PaymentData,
   }
 }
 ```
+---
+| \gSummary
+
+- The core is pure thanks to the use of effect type
+
+- Clear separation of concerns, each business function is implemented in a separate class
+
+- Separation of state and behaviour
+
+- Purity and referentially transparency makes the code easier to understand and refactor
+
+- We separated the description from the implementation
+
+- Room for further improvements: create a type for currencies and emails
+
