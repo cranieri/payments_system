@@ -4,6 +4,6 @@ To start the presentation do the following:
 
 ```alias REPLesent='scala -Dscala.color -language:_ -nowarn -i REPLesent.scala'```
 
-```Replesent```
+```REPLesent```
 
 ```scala> :load presentation.txt```
